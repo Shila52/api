@@ -23,24 +23,12 @@ router.get("/all", auth.userAuthentication, (req, res) => {
 
 router.post("/add", auth.addUserToAuthList, (req, res) => {
   users.push({ name: req.body, playing: "" });
-  //retrive data of created user
-  const t = [
-    {
-      id: 1,
-      name: "mzhda",
-    },
-    {
-      id: 2,
-      name: "zhiar",
-    },
-  ];
-  res.status(200).json({
-    user: t[Math.floor(Math.random() * 2)],
-  });
+  res.sendStatus(200);
 });
 
 router.post("/join/:id", auth.userAuthentication, (req, res) => {
-  const userInfo = auth.getUserInfo(req.session.id);
+  const userInfo = req.user;
+  console.log(userInfo);
   users.forEach((user) => {
     if (user.name === userInfo.name) user.playing = req.params.id;
   });

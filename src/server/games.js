@@ -2,161 +2,154 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const auth = require("./auth");
 const tilesMap = require("./TilesMap.js");
-const { setData, searchForGames, GetGame } = require("./firebase");
+const { GetGames, setData, GetGame } = require("./firebase");
+const io = require("../socket");
+const gamesdb = require("./GamesSchema");
 
 const NUM_TILES = 28;
-const NUM_STACK = 5;
+const NUM_STACK = 7;
 const BOARD_SIZE = 784;
 const MIDDLE_TILE = 406;
-const games = [];
 
 const router = express.Router();
 
 router.use(bodyParser.json());
 
+router.get("/all", auth.userAuthentication, async (req, res) => {
+  try {
+    const data = await gamesdb.find({ active: false });
+
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ msg: error });
+  }
+});
+
 router.post("/new", auth.userAuthentication, async (req, res) => {
-  //search for games if we have else create games
-  const id = req.body.user_id;
-  let Data = await searchForGames(id);
+  const createdBy = req.body.body.id;
 
-  if (Data.length == 1) {
-    const playerTiles = generatePlayerTiles(Data[0]);
-    const players = {
-      id: id,
-      playerTiles,
-      stats: {
-        score: playerTiles.reduce(
-          (sum, value) => sum + tilesMap[value].a + tilesMap[value].b,
-          0
-        ),
-      },
-    };
-
-    const addplayers = [{ players }];
-    Data = Data[0];
-    Data.active = true;
-    Data.playing = true;
-    Data.players = [...Data.players, ...addplayers];
-    await setData("games/" + Data.id, Data);
-  } else {
-    const createdBy = req.body.user_id;
-    let game = {
-      id: Math.random().toString(36).substr(2, 9),
-      numPlayers: 2,
-      active: false,
-      createdBy,
-      players: null,
-      playing: false,
-      currentPlayer: 0,
-      gameTiles: new Array(NUM_TILES).fill(0).map((_, index) => index),
-      boardTiles: generateBoardTiles(),
-    };
-
-    const playerTiles = generatePlayerTiles(game);
-    const players = {
-      id: createdBy,
-      playerTiles,
-      stats: {
-        score: playerTiles.reduce(
-          (sum, value) => sum + tilesMap[value].a + tilesMap[value].b,
-          0
-        ),
-      },
-    };
-    game.players = [players];
-
-    await setData("games/" + game.id, game)
-    res.status(200).json(game)
-
-   
+  const game = new gamesdb({
+    active: false,
+    numPlayers: 2,
+    createdBy,
+    players: [],
+    playing: false,
+    currentPlayer: 0,
+    gameTiles: new Array(NUM_TILES).fill(0).map((_, index) => index),
+    boardTiles: generateBoardTiles(),
+  });
+  try {
+    await game.save();
+    res.sendStatus(200);
+  } catch (error) {
+    console.log(error);
+    res.status(400).json({ msg: error });
   }
 });
 
-router.get("/:id", auth.userAuthentication, async (req, res) => {
-  const token = req.headers.authorization.split(" ");
+router.get(
+  "/:id/join",
+  [auth.getgamemiddleware, auth.userAuthentication],
+  async (req, res) => {
+    try {
+      const userName = req.user.name;
+      const id = req.user.user_id;
 
-  const user = token[1];
+      const playerTiles = await generatePlayerTiles(res.game);
+      const playersData = {
+        userName,
+        playerTiles,
+        id,
+        stats: {
+          score: playerTiles.reduce(
+            (sum, value) => sum + tilesMap[value].a + tilesMap[value].b,
+            0
+          ),
+        },
+      };
 
-  const currentGame = await GetGame(req.params.id);
+      res.game.players = [...res.game.players, playersData];
+      res.game.currentPlayer = res.game.players[0].id;
+      if (res.game.players.length === res.game.numPlayers) {
+        res.game.active = true;
+        res.game.playing = true;
+      } else {
+        res.game.active = false;
+        res.game.playing = false;
+      }
 
-  const { playerTiles, stats } = currentGame.players.find(
-    (player) => player.id === parseInt(user)
-  );
-
-  const gameObj = currentGame;
-  const gameData = {
-    ...gameObj,
-    playerTiles,
-    boardTiles: currentGame.boardTiles,
-    stats,
-    active: gameObj.players.length === gameObj.numPlayers,
-    playing: gameObj.players[gameObj.currentPlayer].id === parseInt(user),
-  };
-
-
-  res.status(200).json(gameData);
-});
-
-router.get("/:id/join", auth.userAuthentication, (req, res) => {
-  const userName = auth.getUserInfo(req.session.id).name;
-  const currentGame = games.find((game) => game.id === req.params.id);
-
-  const playerTiles = generatePlayerTiles(req.params.id);
-
-  currentGame.players.push({
-    userName,
-    playerTiles,
-    stats: {
-      score: playerTiles.reduce(
-        (sum, value) => sum + tilesMap[value].a + tilesMap[value].b,
-        0
-      ),
-    },
-  });
-
-  if (currentGame.players.length === currentGame.numPlayers) {
-    currentGame.active = true;
-  } else {
-    currentGame.active = false;
+      await res.game.save();
+      console.log("join");
+      console.log(res.game);
+      res.sendStatus(200);
+    } catch (error) {
+      console.log(error);
+      res.status(500).json({ msg: error });
+    }
   }
+);
 
-  res.sendStatus(200);
-});
+router.get(
+  "/:id/leave",
+  [auth.getgamemiddleware, auth.userAuthentication],
+  async (req, res) => {
+    try {
+      const user = req.user;
 
-router.get("/:id/leave", auth.userAuthentication, (req, res) => {
-  const userName = auth.getUserInfo(req.session.id).name;
-  const currentGame = games.find((game) => game.id === req.params.id);
+      const indextoremove = res.game.players.forEach((player, index) => {
+        if (player.id == user.user_id) {
+          return index;
+        }
+      });
+      res.game.players.splice(indextoremove, 1);
+      await res.game.save();
+      res.sendStatus(200);
+    } catch (error) {
+      res.status(500).json({ msg: error });
+    }
+  }
+);
 
-  const playerIndex = currentGame.players.forEach((player, index) => {
-    if (player.userName === userName) return index;
-  });
-  currentGame.players.splice(playerIndex, 1);
-  res.sendStatus(200);
-});
+router.patch(
+  "/:id/update",
+  [auth.getgamemiddleware, auth.userAuthentication],
+  async (req, res) => {
+    try {
+      const user = req.user;
 
-router.post("/:id/update", auth.userAuthentication, (req, res) => {
-  let currentGame = games.find((game) => game.id === req.params.id);
-  const userName = auth.getUserInfo(req.session.id).name;
-  const data = JSON.parse(req.body);
+      const data = req.body.body;
 
-  currentGame.players.find(
-    (player) => player.userName === userName
-  ).playerTiles = data.playerTiles;
+      // console.log(player);
+      if (data.isChangePlayer) {
+        res.game.currentPlayer = res.game.players.find(
+          (player) => player.id != user.user_id
+        ).id;
+      }
+      res.game.players.find((player) => player.id == user.user_id).playerTiles =
+        data.playerTiles;
+      res.game.boardTiles = data.boardTiles;
+      const { stats } = res.game.players.find(
+        (player) => player.id == user.user_id
+      );
+      res.game.stats = stats;
+      res.game.gameTiles = data.gameTiles;
 
-  currentGame.boardTiles = data.boardTiles;
-  currentGame.currentPlayer =
-    (currentGame.currentPlayer + 1) % currentGame.numPlayers;
-
-  res.sendStatus(200);
-});
+      res.game.save().then(() => {
+      
+        res.status(200).json({ gameData: res.game });
+      });
+    } catch (error) {
+      console.log(error);
+      res.status(500).json({ msg: error });
+    }
+  }
+);
 
 router.appendUserLogoutMessage = function (userInfo) {
   games.push({ user: userInfo, text: `user had logout` });
 };
 
-const generatePlayerTiles = (game) => {
-  const currentGame = game;
-
+const generatePlayerTiles = async (currentGame) => {
   const gameTiles = currentGame.gameTiles;
   const playerTiles = [];
 
@@ -191,5 +184,98 @@ const generateBoardTiles = () => {
 
   return boardTiles;
 };
+router.get(
+  "/:id",
+  [auth.getgamemiddleware, auth.userAuthentication],
+  async (req, res) => {
+    const user = req.user;
+
+    const currentGame = await res.game;
+
+    const { playerTiles, stats } = currentGame.players.find(
+      (player) => player.id == user.user_id
+    );
+
+    const gameObj = currentGame;
+    const gameData = {
+      ...gameObj,
+      playerTiles,
+      boardTiles: currentGame.boardTiles,
+      stats,
+      active: gameObj.players.length === gameObj.numPlayers,
+      playing: gameObj.players.length === gameObj.numPlayers,
+    };
+
+    res.json(gameData);
+  }
+);
+io.on("connection", (socket) => {
+  socket.on("getgamelist", async (data) => {
+    if (data.get == true) {
+      const data = await gamesdb.find({ active: false });
+
+      io.emit("gamelist", { data: data });
+    }
+  });
+  socket.on("jointoroom", async (requestData) => {
+    if (requestData?.id != undefined && requestData?.user_id != undefined) {
+      console.log(
+        "USer : " + socket.id + " has join : " + String(requestData.id)
+      );
+      await socket.join(String(requestData.id));
+    }
+  });
+  socket.on("notifyuser", async (requestData) => {
+    if (requestData?.id != undefined && requestData?.user_id != undefined) {
+      let gameData = await gamesdb.findById(requestData.id);
+
+      if (gameData?.$isNew == false) {
+        gameData = gameData._doc;
+      }
+
+      const { playerTiles, stats } = gameData.players.find(
+        (player) => player.id == requestData.user_id
+      );
+
+      const gameObj = gameData;
+      gameData = {
+        ...gameObj,
+        playerTiles,
+        boardTiles: gameData.boardTiles,
+        stats,
+        active: gameObj.players.length === gameObj.numPlayers,
+        playing: gameObj.players.length === gameObj.numPlayers,
+      };
+      console.log("notify triged ");
+      socket.broadcast
+        .to(String(requestData.id))
+        .emit("game", { gameData: gameData });
+    }
+  });
+  socket.on("sendupdate", async (requestData) => {
+    console.log("update triged");
+    if (requestData?.id != undefined && requestData?.user_id != undefined) {
+      let gameData = requestData.gameData;
+
+      const { stats } = gameData.players.find(
+        (player) => player.id != requestData.user_id
+      );
+
+      const gameObj = gameData;
+      gameData = {
+        ...gameObj,
+
+        boardTiles: gameData.boardTiles,
+        stats,
+        active: gameObj.players.length === gameObj.numPlayers,
+        playing: gameObj.players.length === gameObj.numPlayers,
+      };
+
+      socket.broadcast
+        .to(String(requestData.id))
+        .emit("game", { gameData: gameData });
+    }
+  });
+});
 
 module.exports = router;
