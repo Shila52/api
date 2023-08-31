@@ -2,10 +2,10 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const auth = require("./auth");
 const tilesMap = require("./TilesMap.js");
-const { GetGames, setData, GetGame } = require("./firebase");
 const io = require("../socket");
 const gamesdb = require("./GamesSchema");
-
+const userDb = require("./userSchema");
+const hsDb = require("./histroySchema");
 const NUM_TILES = 28;
 const NUM_STACK = 7;
 const BOARD_SIZE = 784;
@@ -15,35 +15,30 @@ const router = express.Router();
 
 router.use(bodyParser.json());
 
-router.get("/all", auth.userAuthentication, async (req, res) => {
+router.get("/alive", [auth.userAuthentication], async (req, res) => {
   try {
-    const data = await gamesdb.find({ active: false });
+    const id = req.user.user_id;
 
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ msg: error });
-  }
-});
+    const user = await userDb.findOne({ id: id });
 
-router.post("/new", auth.userAuthentication, async (req, res) => {
-  const createdBy = req.body.body.id;
+    if (user.gameid != "") {
+      const game = await gamesdb.findById(user.gameid);
 
-  const game = new gamesdb({
-    active: false,
-    numPlayers: 2,
-    createdBy,
-    players: [],
-    playing: false,
-    currentPlayer: 0,
-    gameTiles: new Array(NUM_TILES).fill(0).map((_, index) => index),
-    boardTiles: generateBoardTiles(),
-  });
-  try {
-    await game.save();
-    res.sendStatus(200);
+      await userDb.findByIdAndUpdate(user._id, user).then((r) => {
+        if (game.gameStats.isGameover.result == false) {
+          res.status(200).json({ gameid: game._id });
+        } else {
+          res.status(200).json({ gameid: null });
+        }
+      });
+    } else {
+      res.status(200).json({ gameid: null });
+    }
+
+    // console.log(game)
   } catch (error) {
     console.log(error);
-    res.status(400).json({ msg: error });
+    res.status(500).json({ msg: error });
   }
 });
 
@@ -67,21 +62,30 @@ router.get(
           ),
         },
       };
-
-      res.game.players = [...res.game.players, playersData];
-      res.game.currentPlayer = res.game.players[0].id;
-      if (res.game.players.length === res.game.numPlayers) {
-        res.game.active = true;
-        res.game.playing = true;
+      if (res.game.players.find((p) => p.id == id)) {
+        res.sendStatus(200);
       } else {
-        res.game.active = false;
-        res.game.playing = false;
+        res.game.players = [...res.game.players, playersData];
+        res.game.currentPlayer = res.game.players[0].id;
+        if (res.game.players.length === res.game.numPlayers) {
+          res.game.active = true;
+          res.game.playing = true;
+        } else {
+          res.game.active = false;
+          res.game.playing = false;
+        }
+        try {
+          await gamesdb.findByIdAndUpdate(res.game._id, res.game);
+          await userDb
+            .findOneAndUpdate({ id: id }, { gameid: res.game._id })
+            .then(() => {
+              res.sendStatus(200);
+              console.log("join");
+            });
+        } catch (error) {
+          console.log(error);
+        }
       }
-
-      await res.game.save();
-      console.log("join");
-      console.log(res.game);
-      res.sendStatus(200);
     } catch (error) {
       console.log(error);
       res.status(500).json({ msg: error });
@@ -96,14 +100,11 @@ router.get(
     try {
       const user = req.user;
 
-      const indextoremove = res.game.players.forEach((player, index) => {
-        if (player.id == user.user_id) {
-          return index;
-        }
-      });
-      res.game.players.splice(indextoremove, 1);
-      await res.game.save();
-      res.sendStatus(200);
+      await userDb
+        .findOneAndUpdate({ id: user.user_id }, { state: 2, gameid: "" })
+        .then(() => {
+          res.sendStatus(200);
+        });
     } catch (error) {
       res.status(500).json({ msg: error });
     }
@@ -118,26 +119,110 @@ router.patch(
       const user = req.user;
 
       const data = req.body.body;
+      if (data.gameStats.isGameover.result) {
+        console.log("result");
+        let idWinner =
+          data.gameStats.isGameover.id != ""
+            ? data.gameStats.isGameover.id
+            : null;
+        console.log("id winner " + idWinner);
 
-      // console.log(player);
-      if (data.isChangePlayer) {
-        res.game.currentPlayer = res.game.players.find(
-          (player) => player.id != user.user_id
-        ).id;
+        if (idWinner != null) {
+          res.game.currentPlayer = idWinner;
+          //find playuer id
+          console.log(data.players);
+          let sum = 0;
+          console.log(
+            data.players
+              .find((p) => p.id != idWinner)
+              .playerTiles.forEach((value) => {
+                sum = sum + tilesMap[value].a + tilesMap[value].b;
+              })
+          );
+          console.log(sum + " :================");
+          res.game.players.find((p) => p.id == idWinner).point =
+            res.game.players.find((p) => p.id == idWinner).point + sum;
+
+          if (res.game.players.find((p) => p.id == idWinner).point >= 50) {
+            //return game finished
+            const prize = res.game.dealedcoin;
+            const gamehistory = await hsDb.findOne({ gameid: res.game._id });
+
+            console.log("gamefinshied return triged");
+            await res.game.players.forEach(async (p) => {
+              const user = await userDb.findOne({ id: p.id });
+              let newPrize = user.coins;
+              if (p.id == idWinner) {
+                newPrize = newPrize + prize;
+              }
+              await userDb.findOneAndUpdate(
+                { id: p.id },
+                { gameid: "", state: 2, coins: newPrize }
+              );
+            });
+            gamehistory.p1 = res.game.players[0];
+            gamehistory.p2 = res.game.players[1];
+            gamehistory.winner = res.game.players.find((p) => p.id == idWinner);
+            res.game.players[0].playerTiles = [];
+            res.game.players[1].playerTiles = [];
+            res.game.gameStats.isGameover.result = true;
+            try {
+              await gamehistory.save();
+            } catch (error) {
+              console.log(error);
+            }
+            console.log(gamehistory);
+            try {
+              res.game.save().then(() => {
+                res.status(200).json({ gameData: res.game });
+              });
+            } catch (error) {
+              console.log(error);
+            }
+          } else {
+            res.game.gameTiles = new Array(NUM_TILES)
+              .fill(0)
+              .map((_, index) => index);
+            res.game.boardTiles = generateBoardTiles();
+            await res.game.players.forEach(async (p, i) => {
+              const playerTiles = await generatePlayerTiles(res.game);
+              res.game.players[i].playerTiles = playerTiles;
+              res.game.players[i].stats.score = playerTiles.reduce(
+                (sum, value) => sum + tilesMap[value].a + tilesMap[value].b
+              );
+            });
+            res.game.gameStats.isGameover.result = false;
+            res.game.gameStats.isGameover.id = "";
+            try {
+              res.game.save().then(() => {
+                res.status(200).json({ gameData: res.game });
+              });
+            } catch (error) {
+              console.log(error);
+            }
+          }
+        }
+      } else {
+        // console.log(player);
+        if (data.isChangePlayer) {
+          res.game.currentPlayer = res.game.players.find(
+            (player) => player.id != user.user_id
+          ).id;
+        }
+        res.game.players.find(
+          (player) => player.id == user.user_id
+        ).playerTiles = data.playerTiles;
+        res.game.boardTiles = data.boardTiles;
+        const { stats } = res.game.players.find(
+          (player) => player.id == user.user_id
+        );
+        res.game.stats = stats;
+        res.game.gameTiles = data.gameTiles;
+
+        await res.game.save().then(() => {
+          res.status(200).json({ gameData: res.game });
+        });
       }
-      res.game.players.find((player) => player.id == user.user_id).playerTiles =
-        data.playerTiles;
-      res.game.boardTiles = data.boardTiles;
-      const { stats } = res.game.players.find(
-        (player) => player.id == user.user_id
-      );
-      res.game.stats = stats;
-      res.game.gameTiles = data.gameTiles;
-
-      res.game.save().then(() => {
-      
-        res.status(200).json({ gameData: res.game });
-      });
     } catch (error) {
       console.log(error);
       res.status(500).json({ msg: error });
@@ -145,9 +230,7 @@ router.patch(
   }
 );
 
-router.appendUserLogoutMessage = function (userInfo) {
-  games.push({ user: userInfo, text: `user had logout` });
-};
+
 
 const generatePlayerTiles = async (currentGame) => {
   const gameTiles = currentGame.gameTiles;
@@ -246,7 +329,7 @@ io.on("connection", (socket) => {
         active: gameObj.players.length === gameObj.numPlayers,
         playing: gameObj.players.length === gameObj.numPlayers,
       };
-      console.log("notify triged ");
+
       socket.broadcast
         .to(String(requestData.id))
         .emit("game", { gameData: gameData });
@@ -274,6 +357,59 @@ io.on("connection", (socket) => {
       socket.broadcast
         .to(String(requestData.id))
         .emit("game", { gameData: gameData });
+    }
+  });
+
+  socket.on("searchForPlayers", async (data) => {
+    try {
+      console.log(data.coin);
+
+      await userDb
+        .aggregate([
+          { $match: { state: 3, dealingcoin: data.coin } },
+          { $sample: { size: 2 } },
+        ])
+        .then(async (res) => {
+          console.log(res);
+          const Playersget = res;
+
+          if (Playersget.length == 2) {
+            //2 players found
+            let gameid;
+            //create game
+            const newGame = new gamesdb({
+              active: false,
+              numPlayers: 2,
+              createdBy: Playersget[0].id,
+              dealedcoin: data.coin,
+              players: [],
+              playing: false,
+              currentPlayer: 0,
+              gameTiles: new Array(NUM_TILES).fill(0).map((_, index) => index),
+              boardTiles: generateBoardTiles(),
+            });
+            //end create game
+            newGame.save().then(async (res) => {
+              gameid = res._id;
+              await hsDb.create({ gameid: gameid, dealedcoins: data.coin });
+              Playersget.forEach(async (player) => {
+                return await userDb
+                  .findOneAndUpdate({ id: player.id }, { state: 4 })
+                  .then(() => {
+                    io.to(player.socketid).emit("foundPlayer", {
+                      stop: true,
+                    });
+                  });
+              });
+              io.to([Playersget[0].socketid, Playersget[1].socketid]).emit(
+                "getgame",
+                { id: gameid }
+              );
+            });
+          }
+        });
+    } catch (error) {
+      console.log(error);
     }
   });
 });

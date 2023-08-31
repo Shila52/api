@@ -1,9 +1,8 @@
-const path = require("path");
 const express = require("express");
-const session = require("express-session");
+
 const bodyParser = require("body-parser");
 const users = require("./server/users");
-const http = require("http");
+
 const games = require("./server/games");
 const app = express();
 
