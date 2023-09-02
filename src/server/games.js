@@ -171,7 +171,7 @@ router.patch(
             } catch (error) {
               console.log(error);
             }
-            console.log(gamehistory);
+
             try {
               res.game.save().then(() => {
                 res.status(200).json({ gameData: res.game });
@@ -229,8 +229,6 @@ router.patch(
     }
   }
 );
-
-
 
 const generatePlayerTiles = async (currentGame) => {
   const gameTiles = currentGame.gameTiles;
@@ -302,6 +300,10 @@ io.on("connection", (socket) => {
   });
   socket.on("jointoroom", async (requestData) => {
     if (requestData?.id != undefined && requestData?.user_id != undefined) {
+      await userDb.findOneAndUpdate(
+        { id: requestData.id },
+        { socketid: socket.id }
+      );
       console.log(
         "USer : " + socket.id + " has join : " + String(requestData.id)
       );
@@ -362,15 +364,12 @@ io.on("connection", (socket) => {
 
   socket.on("searchForPlayers", async (data) => {
     try {
-      console.log(data.coin);
-
       await userDb
         .aggregate([
           { $match: { state: 3, dealingcoin: data.coin } },
           { $sample: { size: 2 } },
         ])
         .then(async (res) => {
-          console.log(res);
           const Playersget = res;
 
           if (Playersget.length == 2) {

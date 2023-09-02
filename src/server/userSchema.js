@@ -6,6 +6,7 @@ const { default: mongoose } = require("mongoose");
 const userSchema = new mongoose.Schema({
   id: String,
   name: String,
+  token: String,
   state: { type: Number, default: 1 },
   socketid: { type: String, default: "" },
   gameid: { type: String, default: "" },
