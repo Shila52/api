@@ -11,7 +11,7 @@ async function userAuthentication(req, res, next) {
         .findOne({ token: token })
         .then((decodedToken) => {
           const user = decodedToken;
-          
+
           if (user) {
             req.user = user;
             req.user.user_id = user.id;
@@ -30,11 +30,40 @@ async function userAuthentication(req, res, next) {
     res.sendStatus(500);
   }
 }
+async function AdminCheck(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  console.log(authHeader);
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.substring(7);
+
+    try {
+      await userDb
+        .findOne({ token: token })
+        .then((decodedToken) => {
+          const user = decodedToken;
+
+          req.user = user;
+          req.user.user_id = user.id;
+          next();
+        })
+        .catch((error) => {
+          console.log(error, "auth");
+          res.sendStatus(401);
+        });
+    } catch (error) {
+      console.log(error, "auth");
+      res.sendStatus(401);
+    }
+  } else {
+    res.sendStatus(500);
+  }
+}
 
 async function getgamemiddleware(req, res, next) {
   let game;
   try {
     game = await gamesdb.findById(req.params.id);
+   
 
     if (game == null) {
       return res.status(404).json({ msg: "not found .." });
@@ -52,4 +81,5 @@ async function getgamemiddleware(req, res, next) {
 module.exports = {
   userAuthentication,
   getgamemiddleware,
+  AdminCheck,
 };

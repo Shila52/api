@@ -30,12 +30,14 @@
   },
   "dependencies": {
     "@babel/polyfill": "^7.2.5",
+    "coinbase-commerce-node": "^1.0.4",
     "cors": "^2.8.5",
     "express": "^4.17.1",
     "express-session": "^1.16.2",
     "firebase": "^10.2.0",
     "firebase-admin": "^11.10.1",
     "http": "^0.0.1-security",
+    "install": "^0.13.0",
     "mongoose": "^7.4.4",
     "socket.io": "^4.7.2"
   },

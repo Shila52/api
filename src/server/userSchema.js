@@ -10,6 +10,9 @@ const userSchema = new mongoose.Schema({
   state: { type: Number, default: 1 },
   socketid: { type: String, default: "" },
   gameid: { type: String, default: "" },
+  Tradeno: { type: Number, default: 0 },
+  phone: String,
+  email: String,
   dealingcoin: {
     type: Number,
     default: 0,
